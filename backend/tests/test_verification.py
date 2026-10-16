@@ -73,3 +73,75 @@ def test_test_runner_never_executes_supplied_target_or_command():
     assert result["status"] == "unavailable"
     assert result["executed"] is False
     assert "isolated" in result["message"]
+
+@pytest.mark.parametrize("module,func,stdout", [
+    ("app.verification.ruff_runner", run_ruff, "{}"),
+    ("app.verification.bandit_runner", run_bandit, '{"results": {}}'),
+])
+def test_invalid_json_structure_is_reported(module, func, stdout):
+    with patch(f"{module}.subprocess.run", return_value=completed(stdout)):
+        with pytest.raises(ToolExecutionError):
+            func(["a.py"])
+
+
+def test_ruff_skips_non_objects_and_sanitizes_malformed_fields():
+    payload = [None, {
+        "filename": 42,
+        "location": ["bad"],
+        "code": 17,
+        "message": {"bad": "type"},
+        "source_code": ["not", "text"],
+    }, {
+        "filename": "src\\nested\\a.py",
+        "location": {"row": "8"},
+        "code": "F401",
+        "message": "unused",
+        "cell": "  import os",
+    }]
+    with patch("app.verification.ruff_runner.subprocess.run", return_value=completed(json.dumps(payload))):
+        result = run_ruff(["a.py"])
+    assert result == [
+        {"file_path": "", "line": None, "rule_id": None, "message": "", "evidence": None},
+        {"file_path": "src/nested/a.py", "line": None, "rule_id": "F401", "message": "unused", "evidence": "  import os"},
+    ]
+
+
+def test_bandit_sanitizes_malformed_fields_and_code_formats():
+    payload = {"results": [
+        None,
+        {"filename": "src\\bad.py", "line_number": True, "test_id": [], "issue_severity": {}, "issue_text": 3, "code": 5},
+        {"filename": "src\\lines.py", "line_number": 4, "test_id": "B101", "issue_severity": "LOW", "issue_text": "assert", "code": ["  first\n", None, "second\r\n"]},
+        {"filename": "src\\missing.py", "code": None},
+    ]}
+    with patch("app.verification.bandit_runner.subprocess.run", return_value=completed(json.dumps(payload))):
+        result = run_bandit(["a.py"])
+    assert result == [
+        {"file_path": "src/bad.py", "line": None, "rule_id": None, "message": "", "severity": None, "evidence": None},
+        {"file_path": "src/lines.py", "line": 4, "rule_id": "B101", "message": "assert", "severity": "LOW", "evidence": "  first\nsecond"},
+        {"file_path": "src/missing.py", "line": None, "rule_id": None, "message": "", "severity": None, "evidence": None},
+    ]
+
+
+def test_normalizers_sanitize_malformed_records_into_valid_findings():
+    for findings in (
+        normalize_ruff([None, {"file_path": [], "line": True, "rule_id": {}, "message": None, "evidence": 4}]),
+        normalize_bandit([None, {"file_path": None, "line": "4", "rule_id": [], "severity": [], "message": {}, "evidence": {}}]),
+    ):
+        assert all(isinstance(finding, Finding) for finding in findings)
+        assert findings[0].file_path == ""
+        assert findings[0].line is None
+        assert findings[0].rule_id is None
+        assert findings[0].message == ""
+        assert findings[0].evidence is None
+        assert findings[0].verification_status == "tool_flagged"
+
+
+def test_normalizers_accept_non_iterable_input_safely():
+    assert normalize_ruff(None) == []
+    assert normalize_bandit(None) == []
+
+
+def test_bandit_invalid_exit_code_is_execution_error():
+    with patch("app.verification.bandit_runner.subprocess.run", return_value=completed("{}", 2, "bad args")):
+        with pytest.raises(ToolExecutionError, match="exit code 2"):
+            run_bandit(["a.py"])
