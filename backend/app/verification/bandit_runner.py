@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
+from .path_validation import validate_python_files
 from .ruff_runner import ToolExecutionError
 
 
@@ -18,9 +19,16 @@ def _positive_line(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
-def run_bandit(paths: Sequence[str], timeout: float = 30, executable: str = "bandit") -> list[dict[str, Any]]:
-    """Run Bandit without a shell. Exit 1 is a normal findings result."""
-    command = [executable, "-f", "json", *map(str, paths)]
+def run_bandit(
+    paths: Sequence[str], timeout: float = 30, executable: str = "bandit", *, root: str | Path
+) -> list[dict[str, Any]]:
+    """Run Bandit on validated checkout files without a shell.
+
+    Exit 1 is a normal findings result. Absolute validated paths cannot be
+    interpreted as options, including files whose names begin with ``-``.
+    """
+    target_paths = validate_python_files(paths, root)
+    command = [executable, "-f", "json", *target_paths]
     try:
         completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
     except FileNotFoundError as exc:
