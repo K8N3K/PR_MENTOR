@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
+from .path_validation import validate_python_files
+
 
 class ToolExecutionError(RuntimeError):
     """A static-analysis tool could not run or returned invalid output."""
@@ -20,9 +22,16 @@ def _positive_line(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
-def run_ruff(paths: Sequence[str], timeout: float = 30, executable: str = "ruff") -> list[dict[str, Any]]:
-    """Run Ruff without a shell. Ruff exit 1 means findings were detected."""
-    command = [executable, "check", "--output-format", "json", *map(str, paths)]
+def run_ruff(
+    paths: Sequence[str], timeout: float = 30, executable: str = "ruff", *, root: str | Path
+) -> list[dict[str, Any]]:
+    """Run Ruff on validated checkout files without a shell.
+
+    Ruff exit 1 means findings were detected. Absolute validated paths cannot
+    be interpreted as options, including files whose names begin with ``-``.
+    """
+    target_paths = validate_python_files(paths, root)
+    command = [executable, "check", "--output-format", "json", *target_paths]
     try:
         completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
     except FileNotFoundError as exc:
